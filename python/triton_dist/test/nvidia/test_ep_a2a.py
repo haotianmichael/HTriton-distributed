@@ -416,7 +416,7 @@ def perf_torch(args, input, weight, exp_indices):
 
 def straggler(rank):
     clock_rate = torch.cuda.clock_rate() * 1e6
-    cycles = random.randint(0, clock_rate * 0.0001) * (rank + 1)
+    cycles = random.randint(0, int(clock_rate * 0.0001)) * (rank + 1)
     torch.cuda._sleep(cycles)
 
 

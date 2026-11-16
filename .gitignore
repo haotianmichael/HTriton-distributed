@@ -89,3 +89,4 @@ tmp*
 
 .cursor
 *.csv
+*.log
