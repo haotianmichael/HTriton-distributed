@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+# Copyright (c) 2025-2026 ByteDance Ltd. and/or its affiliates
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files
@@ -36,7 +36,7 @@
 # -- Project information -----------------------------------------------------
 
 project = "Triton-distributed"
-copyright = "2025 ByteDance Seed Infrastructures Team"
+copyright = "2025-2026 ByteDance Seed Infrastructures Team"
 author = "Size Zheng, Yifan Guo, Wenlei Bao, Li-Wen Chang, Xin Liu"
 
 # The version info for the project you're documenting, acts as replacement for
@@ -62,8 +62,13 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
     "sphinx_gallery.gen_gallery",
 ]
+
+intersphinx_mapping = {
+    'torch': ('https://docs.pytorch.org/docs/stable/', None),
+}
 
 sphinx_gallery_conf = {
     'examples_dirs': 'examples',

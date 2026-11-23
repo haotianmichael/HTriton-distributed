@@ -5,107 +5,110 @@ Getting Started
    :local:
    :depth: 2
 
-Installation
-------------
+Installation & CPU Verification
+-------------------------------
 
-LittleKernel is included in Triton-distributed.  A standard editable install
-picks it up automatically::
+LittleKernel requires Python 3.11 or newer and NumPy for CPU compilation and
+source generation. When building ``Triton-distributed`` via ``python/setup.py``,
+the bundled ``little_kernel`` package (including ``nv/sm90``, ``nv/sm100``, and
+``amd/cdna4`` descriptors and runtime headers) is installed automatically unless
+disabled via ``TRITON_BUILD_LITTLE_KERNEL=0``.
 
-    cd python
-    TRITON_BUILD_LITTLE_KERNEL=ON pip install -e .
+To set up the standalone locked developer environment and run CPU verification
+from the repository root:
 
-Verify::
+.. code-block:: bash
 
-    python -c "import little_kernel; print('OK')"
+    uv sync --locked --group cpu-test --group build --group format
+    uv run --locked pytest -q
+    uv run --locked python tools/verify.py --list
+    uv run --locked python tools/verify.py --backend nv/sm90 --suite cpu
+    uv run --locked python tools/verify.py --backend nv/sm100 --suite cpu
+    uv run --locked python tools/verify.py --backend amd/cdna4 --suite cpu
 
-Prerequisites:
+Writing & Inspecting Your First Kernel
+--------------------------------------
 
-- Python >= 3.9
-- PyTorch with CUDA support
-- ``nvcc`` on ``$PATH`` (CUDA Toolkit 12+; CUDA 13 for SM100)
-
-Writing Your First Kernel
--------------------------
-
-A minimal kernel that adds two vectors:
+Source generation (``compile_artifact`` or ``compile``) runs purely on CPU without
+requiring a GPU or PyTorch:
 
 .. code-block:: python
 
     import little_kernel as lk
-    import little_kernel.language as ll
+    from little_kernel.backends import get_backend
     from little_kernel.core.passes import PASSES
-    from little_kernel.codegen.codegen_cuda import codegen_cuda
+
+    backend = get_backend("nv/sm90")  # or "nv/sm100" / "amd/cdna4"
+    ll = backend.language
+
+    @lk.ll_kernel(backend="nv/sm90", is_entry=True)
+    def vector_add(
+        a: ll.Tensor[ll.float32],
+        b: ll.Tensor[ll.float32],
+        out: ll.Tensor[ll.float32],
+        n: ll.int32,
+    ) -> ll.void:
+        i: ll.int32 = ll.blockIdx_x() * 256 + ll.threadIdx_x()
+        if i < n:
+            out[i] = a[i] + b[i]
+
+    artifact = vector_add.compile_artifact(
+        PASSES[backend.backend_id],
+        backend.codegen.generate,
+        target="sm_90a",
+        num_threads=256,
+    )
+    print(artifact.source)
+
+Building & Launching on GPU
+---------------------------
+
+Calling ``.build(...)`` invokes the backend's native compiler toolchain (``nvcc``
+for ``SM90`` / ``SM100``, ``hipcc`` for ``GFX950``), caches the compiled binary,
+and returns a callable launcher accepting PyTorch CUDA/HIP tensors and Python
+scalars:
+
+.. code-block:: python
+
     import torch
 
-    @lk.ll_kernel(backend="cuda", is_entry=True)
-    def vec_add(
-        A: ll.Tensor[ll.float32],
-        B: ll.Tensor[ll.float32],
-        C: ll.Tensor[ll.float32],
-        N: ll.int32,
-    ) -> ll.void:
-        tid: ll.int32 = ll.blockIdx_x() * ll.blockDim_x() + ll.threadIdx_x()
-        if tid < N:
-            C[tid] = A[tid] + B[tid]
-
-    # Build
-    passes = PASSES["cuda"]
-    N = 1024
-    kernel = vec_add.build(
-        passes, codegen_cuda,
-        grid=(N // 256, 1, 1),
+    n = 4096
+    kernel = vector_add.build(
+        PASSES["nv/sm90"],
+        backend.codegen.generate,
+        grid=((n + 255) // 256, 1, 1),
         block=(256, 1, 1),
-        arch="sm_90",
+        arch="sm_90a",  # use "sm_100a" on SM100 or "gfx950" on amd/cdna4
     )
 
-    # Launch
-    A = torch.randn(N, device="cuda", dtype=torch.float32)
-    B = torch.randn(N, device="cuda", dtype=torch.float32)
-    C = torch.empty(N, device="cuda", dtype=torch.float32)
-    kernel(A, B, C, N)
-    torch.cuda.synchronize()
-    assert torch.allclose(C, A + B)
-    print("PASS")
+    a = torch.randn(n, device="cuda", dtype=torch.float32)
+    b = torch.randn(n, device="cuda", dtype=torch.float32)
+    out = torch.empty_like(a)
+    kernel(a, b, out, n)
+    kernel.synchronize()
+    torch.testing.assert_close(out, a + b)
 
-Running Benchmarks
-------------------
+Running Hardware Suites & Benchmarks
+------------------------------------
 
-Micro-benchmarks
-~~~~~~~~~~~~~~~~
+Device verification and benchmarks require matching physical hardware (**SM90**,
+**SM100**, or **GFX950**), drivers, ``nvcc``/``hipcc``, and PyTorch:
 
-Run the full suite on a Hopper GPU::
+.. code-block:: bash
 
-    python -m little_kernel.benchmark.run_all
+    # Device verification suites
+    uv run --locked python tools/verify.py --backend nv/sm90 --suite gpu
+    uv run --locked python tools/verify.py --backend nv/sm100 --suite gpu
+    uv run --locked python tools/verify.py --backend amd/cdna4 --suite gpu
 
-Or a specific category::
+    # Representative SM90 benchmarks
+    python3 benchmarks/nv/sm90/gemm/sm90_deepgemm_full_optimizations.py
+    python3 benchmarks/nv/sm90/flashattention/level6/flash_attn_varlen.py
 
-    python -m little_kernel.benchmark.run_all --category compute
+    # Representative SM100 single-GPU & multi-GPU overlap benchmarks
+    python3 benchmarks/nv/sm100/dataflow/bench_gemm_sm100.py
+    python3 benchmarks/nv/sm100/dataflow/bench_mxfp8_gemm.py
+    torchrun --standalone --nproc_per_node=4 benchmarks/nv/sm100/dataflow/bench_all_gather_gemm_sm100.py --no-triton-dist --no-thunderkittens
 
-SM90 GEMM Kernels
-~~~~~~~~~~~~~~~~~
-
-Run individual GEMM variants::
-
-    python -m little_kernel.benchmark.gemm_sm90.gemm_v1
-
-SM100 GEMM Kernels
-~~~~~~~~~~~~~~~~~~
-
-Run all levels (requires Blackwell GPU)::
-
-    python -m little_kernel.benchmark.gemm_sm100.test_all_levels
-
-Or a specific level::
-
-    python -m little_kernel.benchmark.gemm_sm100.gemm_level1
-
-Running Tests
--------------
-
-Unit tests (no GPU required for most)::
-
-    pytest test/little_kernel/unit/ -v
-
-Integration tests (requires GPU)::
-
-    pytest test/little_kernel/integration/ -v
+    # Representative GFX950 benchmarks
+    python3 benchmarks/amd/cdna4/mxfp8_gemm_gfx950_persistent.py
